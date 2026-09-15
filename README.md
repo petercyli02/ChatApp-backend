@@ -1,164 +1,105 @@
-# Chat Application Backend
+# Chat API
 
-A real-time chat application backend built with FastAPI, demonstrating **async programming** and **concurrency** in Python.
+Async FastAPI backend for a real-time chat product. Pair with the [React client](https://github.com/petercyli02/ChatApp-frontend).
 
-## Learning Goals
+Firebase owns identity. This service owns authorization, persistence, and fan-out. HTTP is the source of truth; WebSockets are a live overlay.
 
-This project teaches:
+## Stack
 
-1. **Async I/O** - Non-blocking database operations with async SQLAlchemy
-2. **WebSockets** - Real-time bidirectional communication
-3. **Concurrent connections** - Handling many users with asyncio
-4. **Background tasks** - Non-blocking operations
-5. **Event loop** - Understanding how Python async works
+| Layer | Choice | Why |
+|---|---|---|
+| HTTP / WS | FastAPI + Uvicorn | Native async, typed routes, OpenAPI for free |
+| ORM | SQLAlchemy 2.0 async + asyncpg | Non-blocking I/O against Postgres |
+| Auth | Firebase Admin ID tokens | Same credential on REST and WebSocket; no homemade password store |
+| Validation | Pydantic v2 | Request/response contracts at the boundary |
+| Runtime | Python 3.12, `uv` | Fast, reproducible installs |
 
-## Tech Stack
+## What it does
 
-- **FastAPI** - Modern async web framework
-- **SQLAlchemy (async)** - Async ORM with asyncpg driver
-- **PostgreSQL** - Database
-- **WebSockets** - Real-time messaging
-- **JWT** - Authentication
-- **Pydantic** - Data validation
+- Rooms with membership, admins, and email invitations (send / list / accept / revoke)
+- Message history with pagination, plus edit and delete (sender only)
+- Per-user hide/unhide — a hide is not a global delete
+- Live room events over WebSocket: messages, join/leave, presence, typing
+- First-seen Firebase users provisioned in Postgres, race-safe under concurrent `/me`
 
-## Quick Start
+## Architecture
 
-### 1. Start PostgreSQL
-
-```bash
-# From project root
-docker-compose up -d postgres
+```
+HTTP / WS
+    │
+    ├─ deps.get_current_user        Bearer → Firebase verify → User
+    ├─ api/                         thin routers, HTTPException only
+    ├─ services/                    rooms, messages, invitations
+    ├─ models/ + schemas/           SQLAlchemy ↔ Pydantic
+    └─ websockets/manager.py        in-process connection map + broadcast
 ```
 
-### 2. Install Dependencies
+Auth failures are transport-agnostic (`InvalidTokenError`, `AccountDisabledError`, `AuthUnavailableError`). HTTP maps them to **401 / 403 / 503**. WebSockets map them to close codes **4001 / 4003 / 4503**. A Google cert-fetch blip does not look like a bad password, and the client is told not to retry 4xxx closes.
+
+`verify_id_token` is sync and can hit the network. It runs in `run_in_threadpool` so the event loop is not blocked.
+
+Related rows are loaded with `selectinload`. Async sessions cannot lazy-load after the await returns.
+
+## HTTP
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/auth/me` | Upsert local user from Firebase UID |
+| `POST` | `/api/auth/logout` | Clears online flag (JWTs are client-discarded) |
+| `GET/POST` | `/api/rooms` | List memberships / create |
+| `GET` | `/api/rooms/{id}` | Room + members |
+| `POST` | `/api/rooms/{id}/join` `…/leave` `…/add` | Membership |
+| `GET` | `/api/messages/room/{id}` | History, `limit`/`offset`, hide flags for caller |
+| `POST` | `/api/messages/edit` `…/delete` `…/hide` `…/unhide` | Authz in the service layer |
+| `POST` | `/api/users/invite` | Body: `{ email, room_id }` |
+| `GET` | `/api/users/invitations/sent` `…/received` | Eager-loads sender, receiver, room |
+| `POST` | `/api/users/invitations/accept/` | Join room, drop invitation |
+| `DELETE` | `/api/users/invitations/delete/{id}` | Sender or receiver |
+
+Interactive spec: `http://localhost:8000/docs`
+
+## WebSocket
+
+```
+WS /ws/{room_id}?token=<firebase_id_token>
+```
+
+Accept first, then verify. Persistence uses a short-lived session; the socket itself stays open. Broadcast is `asyncio.gather` across the room. This process is the connection plane — multi-worker fan-out would be Redis pub/sub, not more in-memory dicts.
+
+Application close codes (`4000–4999`) are terminal. Network drops are not.
+
+## Run it
+
+Needs Postgres 16 and a Firebase service-account JSON (Admin SDK). Put the following in `.env`. Default URL assumes Postgres on **5433**.
 
 ```bash
-cd backend
 uv sync
-```
-
-### 3. Create .env file
-
-```bash
-# Copy example and edit as needed
-cp .env.example .env
-```
-
-### 4. Run the Server
-
-```bash
 uv run uvicorn app.main:app --reload
 ```
 
-### 5. Open API Docs
-
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
-## Project Structure
-
-```
-backend/
-├── app/
-│   ├── main.py           # FastAPI app entry point
-│   ├── config.py         # Settings from environment
-│   ├── database.py       # Async SQLAlchemy setup
-│   │
-│   ├── models/           # SQLAlchemy models
-│   │   ├── user.py       # User model
-│   │   └── message.py    # Message & Room models
-│   │
-│   ├── schemas/          # Pydantic schemas
-│   │   ├── user.py       # User request/response schemas
-│   │   └── message.py    # Message/Room schemas
-│   │
-│   ├── api/              # REST API endpoints
-│   │   ├── auth.py       # Authentication endpoints
-│   │   ├── rooms.py      # Room CRUD
-│   │   ├── messages.py   # Message history
-│   │   └── deps.py       # Shared dependencies
-│   │
-│   ├── websockets/       # WebSocket handlers
-│   │   ├── manager.py    # Connection manager (KEY FILE!)
-│   │   └── chat.py       # Chat WebSocket endpoint
-│   │
-│   ├── services/         # Business logic
-│   │   ├── auth.py       # Auth operations
-│   │   └── chat.py       # Chat operations
-│   │
-│   └── utils/
-│       └── security.py   # JWT & password utilities
-│
-├── pyproject.toml        # Dependencies (uv/pip)
-└── .env                  # Environment variables
+```env
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5433/chatapp
+FIREBASE_SERVICE_ACCOUNT_PATH=/absolute/path/to/serviceAccount.json
+SECRET_KEY=dev-only
 ```
 
-## Key Files to Study
+Never commit the service-account file. CORS is locked to the Vite origin (`localhost:5173`).
 
-### 1. `app/websockets/manager.py`
-The **ConnectionManager** class demonstrates:
-- Managing concurrent WebSocket connections
-- `asyncio.gather()` for parallel message broadcasting
-- Shared state across coroutines
+## Layout
 
-### 2. `app/websockets/chat.py`
-The WebSocket endpoint shows:
-- Long-lived async connections
-- Async receive loop
-- Concurrent client handling
-
-### 3. `app/database.py`
-Async database setup:
-- Async engine creation
-- Async session management
-- Dependency injection pattern
-
-### 4. `app/services/auth.py`
-Async service pattern:
-- Async database queries
-- Non-blocking I/O operations
-
-## API Endpoints
-
-### Authentication
-- `POST /api/auth/register` - Create account
-- `POST /api/auth/login` - Get JWT token
-- `GET /api/auth/me` - Get current user
-- `POST /api/auth/logout` - Logout
-
-### Rooms
-- `GET /api/rooms` - List all rooms
-- `POST /api/rooms` - Create room
-- `GET /api/rooms/{id}` - Get room
-- `POST /api/rooms/{id}/join` - Join room
-
-### Messages
-- `GET /api/messages/room/{id}` - Get room history
-- `POST /api/messages` - Send message (REST)
-
-### WebSocket
-- `WS /ws/{room_id}?token=JWT` - Real-time chat
-
-## WebSocket Message Types
-
-```typescript
-{
-  type: 'message' | 'typing' | 'join' | 'leave' | 'user_list',
-  room_id: number,
-  content?: string,
-  sender_id?: number,
-  sender_username?: string,
-  users?: string[],  // for user_list type
-  created_at: string
-}
+```
+app/
+  api/           routers
+  services/      use-cases
+  models/        tables + relationships
+  schemas/       wire types
+  websockets/    chat endpoint + ConnectionManager
+  utils/         Firebase verifier
+  database.py    async engine, session, create_all
 ```
 
-## Next Steps
+## Honest limits
 
-After understanding the basics:
-
-1. **Add message persistence** - Save WebSocket messages to DB
-2. **Add Redis pub/sub** - Scale across multiple workers
-3. **Add typing indicators** - Real-time typing status
-4. **Add file uploads** - Learn ThreadPoolExecutor for CPU-bound work
-5. **Add tests** - Async testing with pytest-asyncio
+- Schema is `create_all` on boot — fine for this repo, not a migration story.
+- Connection manager is single-process.
+- Tests are declared (`pytest-asyncio`, `httpx`) but not the focus of this snapshot.
