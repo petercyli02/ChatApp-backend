@@ -1,0 +1,14 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Environment variables and secret keys
+.env
+*-firebase-adminsdk-*.json
+
+# Virtual environments
+.venv
