@@ -68,8 +68,16 @@ class ConnectionManager:
         
         # Send current user list to the new connection
         await self.send_user_list(room_id)
-    
-    def disconnect(self, websocket: WebSocket, room_id: int, user_id: int, username: str) -> None:
+
+    def connect_user(self, websocket: WebSocket, user_id: int) -> None:
+        """
+        Accept a WebSocket connection and add to user.
+        """
+        if user_id not in self.user_connections:
+            self.user_connections[user_id] = set()
+        self.user_connections[user_id].add(websocket)
+            
+    def disconnect(self, websocket: WebSocket, room_id: int, user_id: int) -> None:
         """
         Remove a WebSocket connection from a room.
         
@@ -90,6 +98,12 @@ class ConnectionManager:
             self.user_rooms[user_id].discard(room_id)
             if not self.user_rooms[user_id]:
                 del self.user_rooms[user_id]
+    
+    def disconnect_user(self, websocket: WebSocket, user_id: int) -> None:
+        if user_id in self.user_connections:
+            self.user_connections[user_id].discard(websocket)
+            if not self.user_connections[user_id]:
+                del self.user_connections[user_id]
     
     async def broadcast_to_room(
         self,
@@ -127,8 +141,7 @@ class ConnectionManager:
         if send_tasks:
             await asyncio.gather(*send_tasks, return_exceptions=True)
 
-    async def notify_room_members(self, room_id: int, message: WebSocketMessage):
-        room_members = self.get_room_usernames(room_id)
+    async def notify_room_members(self, room_id: int, message: WebSocketMessage, member_ids: list[int]):
         await self.send_to_users(member_ids, message)
 
     async def send_to_user(self, user_id: int, message: WebSocketMessage):

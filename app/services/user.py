@@ -1,7 +1,7 @@
 from app.models.user import Invitation
 from app.schemas import WebSocketMessage
 from app.services import AuthService
-from app.websockets import manager
+from app.websockets.manager import manager
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,39 +42,55 @@ class UserService:
             "receiver_username": receiver.username,
             "room_id": room_id,
         }
-        await manager.send_to_user(receiver.id, WebSocketMessage(type="invite.created", payload=payload))
-        await manager.send_to_user(sender.id, WebSocketMessage(type="invite.created", payload=payload))
+        await manager.send_to_user(
+            receiver.id, WebSocketMessage(type="invite.created", payload=payload)
+        )
+        await manager.send_to_user(
+            sender.id, WebSocketMessage(type="invite.created", payload=payload)
+        )
 
     async def get_received_invitations(self, user_id: int) -> list[Invitation]:
         """Get the current user's received invitations."""
         invitations = await self.db.execute(
-            select(Invitation).options(
+            select(Invitation)
+            .options(
                 selectinload(Invitation.sender),
                 selectinload(Invitation.receiver),
                 selectinload(Invitation.room),
-            ).where(Invitation.receiver_id == user_id)
+            )
+            .where(Invitation.receiver_id == user_id)
         )
         return invitations.scalars().all()
 
     async def get_sent_invitations(self, user_id: int) -> list[Invitation]:
         """Get the current user's sent invitations."""
         invitations = await self.db.execute(
-            select(Invitation).options(
+            select(Invitation)
+            .options(
                 selectinload(Invitation.sender),
                 selectinload(Invitation.receiver),
                 selectinload(Invitation.room),
-            ).where(Invitation.sender_id == user_id)
+            )
+            .where(Invitation.sender_id == user_id)
         )
         return invitations.scalars().all()
-    
+
     async def delete_invitation(self, user_id: int, invitation_id: int) -> None:
         """Delete an invitation."""
-        invitation = await self.db.execute(
-            select(Invitation).where(Invitation.id == invitation_id)
+        result = await self.db.execute(
+            select(Invitation)
+            .options(
+                selectinload(Invitation.sender),
+                selectinload(Invitation.receiver),
+                selectinload(Invitation.room),
+            )
+            .where(Invitation.id == invitation_id)
         )
-        invitation = invitation.scalar_one_or_none()
-        await self.db.delete(invitation)
-        await self.db.commit()
+        invitation = result.scalar_one_or_none()
+
+        if not invitation:
+            return
+
         payload = {
             "invitation_id": invitation.id,
             "sender_id": invitation.sender_id,
@@ -83,5 +99,15 @@ class UserService:
             "receiver_username": invitation.receiver.username,
             "room_id": invitation.room_id,
         }
-        await manager.send_to_user(invitation.receiver_id, WebSocketMessage(type="invite.deleted", payload=payload))
-        await manager.send_to_user(invitation.sender_id, WebSocketMessage(type="invite.deleted", payload=payload))
+
+        await self.db.delete(invitation)
+        await self.db.commit()
+
+        await manager.send_to_user(
+            invitation.receiver_id,
+            WebSocketMessage(type="invite.deleted", payload=payload),
+        )
+        await manager.send_to_user(
+            invitation.sender_id,
+            WebSocketMessage(type="invite.deleted", payload=payload),
+        )

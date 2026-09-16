@@ -72,7 +72,7 @@ class ChatService:
             .order_by(Room.created_at.desc())
         )
         return list(result.scalars().all())
-    
+
     async def add_member_to_room_by_id(self, room_id: int, user_id: int) -> bool:
         """Add a user to a room."""
         print(f"add_member_to_room called: room_id={room_id}, user_id={user_id}")
@@ -98,14 +98,20 @@ class ChatService:
             print(f"Added user to room, new members: {room.members}")
         else:
             print("User already in room")
-        
+
+        member_ids = [member.id for member in room.members]
+
         payload = {
             "user_id": user.id,
             "user_username": user.username,
             "room_id": room.id,
             "room_name": room.name,
         }
-        await manager.notify_room_members(room.id, WebSocketMessage(type="room.member_added", payload=payload))
+        await manager.notify_room_members(
+            room.id,
+            WebSocketMessage(type="room.member_added", payload=payload),
+            member_ids,
+        )
 
         return True
 
@@ -126,13 +132,16 @@ class ChatService:
         if not room or not user:
             print("Room or user not found!")
             return False
-        
+
         if user_id not in room.admin_ids:
             room.admin_ids = [*(room.admin_ids or []), user_id]
             print(f"Added user to admins, new admins: {room.admin_ids}")
         else:
             print("User already in admins")
         await self.db.commit()
+
+        member_ids = [member.id for member in room.members]
+
         payload = {
             "user_id": user.id,
             "user_username": user.username,
@@ -140,7 +149,11 @@ class ChatService:
             "room_name": room.name,
             "admin_ids": room.admin_ids,
         }
-        await manager.notify_room_members(room.id, WebSocketMessage(type="room.admin_added", payload=payload))
+        await manager.notify_room_members(
+            room.id,
+            WebSocketMessage(type="room.admin_added", payload=payload),
+            member_ids,
+        )
         return True
 
     async def remove_admin_from_room_by_id(self, room_id: int, user_id: int) -> bool:
@@ -162,7 +175,9 @@ class ChatService:
             return False
 
         if user_id in room.admin_ids:
-            room.admin_ids = [admin_id for admin_id in room.admin_ids if admin_id != user_id]
+            room.admin_ids = [
+                admin_id for admin_id in room.admin_ids if admin_id != user_id
+            ]
             print(f"Removed user from admins, new admins: {room.admin_ids}")
         else:
             print("User not in admins")
@@ -215,7 +230,7 @@ class ChatService:
         if not room or not user:
             print("Room or user not found!")
             return False
-        
+
         if user_id in room.admin_ids:
             await self.remove_admin_from_room_by_id(room_id, user_id)
             print(f"Removed user from admins, new admins: {room.admin_ids}")
@@ -230,13 +245,19 @@ class ChatService:
         else:
             print("User not in room")
 
+        member_ids = [member.id for member in room.members]
+
         payload = {
             "user_id": user.id,
             "user_username": user.username,
             "room_id": room.id,
             "room_name": room.name,
         }
-        await manager.notify_room_members(room.id, WebSocketMessage(type="room.member_removed", payload=payload))
+        await manager.notify_room_members(
+            room.id,
+            WebSocketMessage(type="room.member_removed", payload=payload),
+            member_ids,
+        )
 
         return True
 
@@ -266,14 +287,21 @@ class ChatService:
         await self.db.refresh(message)
 
         return message
-    
-    async def edit_message(self, message_id: int, content: str, user_id: int) -> Message:
+
+    async def edit_message(
+        self, message_id: int, content: str, user_id: int
+    ) -> Message:
         """Edit a message. Only the sender may edit."""
         message = await self.get_message(message_id)
         if not message:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Message not found"
+            )
         if message.sender_id != user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only edit your own messages")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only edit your own messages",
+            )
         message.content = content
         message.last_edited_at = datetime.now(timezone.utc).isoformat()
         await self.db.commit()
@@ -284,9 +312,14 @@ class ChatService:
         """Permanently delete a message. Only the sender may delete."""
         message = await self.get_message(message_id)
         if not message:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Message not found"
+            )
         if message.sender_id != user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only delete your own messages")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only delete your own messages",
+            )
         await self.db.delete(message)
         await self.db.commit()
 
@@ -294,7 +327,9 @@ class ChatService:
         """Hide a message for this user only."""
         message = await self.get_message(message_id)
         if not message:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Message not found"
+            )
         stmt = (
             insert(message_hides)
             .values(user_id=user_id, message_id=message_id)
@@ -315,9 +350,7 @@ class ChatService:
 
     async def get_hidden_message_ids(self, user_id: int) -> set[int]:
         result = await self.db.execute(
-            select(message_hides.c.message_id).where(
-                message_hides.c.user_id == user_id
-            )
+            select(message_hides.c.message_id).where(message_hides.c.user_id == user_id)
         )
         return set(result.scalars().all())
 

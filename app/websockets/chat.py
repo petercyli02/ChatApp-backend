@@ -184,12 +184,11 @@ async def user_socket(websocket: WebSocket, token: str = Query(...)):
             return
 
         user_id = user.id
-        username = user.username
-        print("firebase_uid/username:", firebase_uid if firebase_uid else username)
+        print("firebase_uid:", firebase_uid)
 
-    await manager.connect(websocket, user_id, username)
+        manager.connect_user(websocket, user_id)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        manager.disconnect(websocket, user_id, username)
+        manager.disconnect_user(websocket, user_id)
