@@ -64,6 +64,11 @@ class InvitationAnswerResponse(BaseModel):
         from_attributes = True
 
 class InvitationAccept(BaseModel):
-    """Schema for accepting an invitation."""
+    """
+    Schema for accepting an invitation.
+
+    The room is read from the invitation itself. Trusting a room_id sent by the
+    client would let anyone join any room. (Older clients still send room_id;
+    Pydantic ignores unknown fields, so they keep working.)
+    """
     invitation_id: int
-    room_id: int

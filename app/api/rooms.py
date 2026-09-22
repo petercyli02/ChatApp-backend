@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -6,6 +6,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.models.user import User
 from app.models.message import Room
+from app.schemas.error import error_responses
 from app.schemas.message import RoomCreate, RoomResponse
 from app.schemas.user import UserResponse
 from app.services.chat import ChatService
@@ -90,7 +91,7 @@ async def get_rooms_for_user(
         for room in rooms
     ]
 
-@router.get("/{room_id}", response_model=RoomResponse)
+@router.get("/{room_id}", response_model=RoomResponse, responses=error_responses(404))
 async def get_room(
     room_id: int,
     current_user: User = Depends(get_current_user),
@@ -98,13 +99,7 @@ async def get_room(
 ):
     """Get a specific room by ID."""
     chat_service = ChatService(db)
-    room = await chat_service.get_room(room_id)
-    
-    if not room:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Room not found"
-        )
+    room = await chat_service.require_room(room_id)
     
     return RoomResponse(
         id=room.id,
@@ -115,7 +110,7 @@ async def get_room(
         member_count=len(room.members)
     )
 
-@router.get("/{room_id}/members", response_model=list[UserResponse])
+@router.get("/{room_id}/members", response_model=list[UserResponse], responses=error_responses(404))
 async def get_room_members(
     room_id: int,
     current_user: User = Depends(get_current_user),
@@ -123,13 +118,7 @@ async def get_room_members(
 ):
     """Get the members of a room."""
     chat_service = ChatService(db)
-    room = await chat_service.get_room(room_id)
-
-    if not room:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Room not found"
-        )
+    room = await chat_service.require_room(room_id)
     
     print(f"Room members: {room.members}")
 
@@ -143,7 +132,7 @@ async def get_room_members(
         last_seen=member.last_seen
     ) for member in room.members]
 
-@router.get("/{room_id}/admins", response_model=list[int])
+@router.get("/{room_id}/admins", response_model=list[int], responses=error_responses(404))
 async def get_room_admins(
     room_id: int,
     current_user: User = Depends(get_current_user),
@@ -151,15 +140,10 @@ async def get_room_admins(
 ):
     """Get the admins of a room."""
     chat_service = ChatService(db)
-    room = await chat_service.get_room(room_id)
-    if not room:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Room not found"
-        )
+    room = await chat_service.require_room(room_id)
     return room.admin_ids
 
-@router.post("/{room_id}/join")
+@router.post("/{room_id}/join", responses=error_responses(404))
 async def join_room(
     room_id: int,
     current_user: User = Depends(get_current_user),
@@ -168,18 +152,13 @@ async def join_room(
     """Join a room."""
     chat_service = ChatService(db)
     
-    room = await chat_service.get_room(room_id)
-    if not room:                    # if room not found, raise an error
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Room not found"
-        )
+    room = await chat_service.require_room(room_id)
     
     await chat_service.add_member_to_room_by_id(room_id, current_user.id)
     
     return {"message": f"Joined room {room.name}"}
 
-@router.post("/{room_id}/add")
+@router.post("/{room_id}/add", responses=error_responses(404))
 async def add_member_to_room(
     room_id: int,
     email: str,
@@ -190,18 +169,13 @@ async def add_member_to_room(
     chat_service = ChatService(db)
     print("#1")
 
-    room = await chat_service.get_room(room_id)
-    if not room:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Room not found"
-        )
+    room = await chat_service.require_room(room_id)
     print("#2")
     await chat_service.add_member_to_room_by_email(room_id, email)
     print("#3")
     return {"message": f"Added member {email} to room {room.name}"}
 
-@router.post("/{room_id}/remove/{user_id}")
+@router.post("/{room_id}/remove/{user_id}", responses=error_responses(404))
 async def remove_member_from_room(
     room_id: int,
     user_id: int,
@@ -213,7 +187,7 @@ async def remove_member_from_room(
     await chat_service.remove_member_from_room(room_id, user_id)
     return {"message": f"Removed member {user_id} from room {room_id}"}
 
-@router.post("/{room_id}/leave")
+@router.post("/{room_id}/leave", responses=error_responses(404))
 async def leave_room(
     room_id: int,
     current_user: User = Depends(get_current_user),
@@ -224,7 +198,7 @@ async def leave_room(
     await chat_service.remove_member_from_room(room_id, current_user.id)
     return {"message": f"Left room with id{room_id}"}
 
-@router.post("/{room_id}/add_admin/{user_id}")
+@router.post("/{room_id}/add_admin/{user_id}", responses=error_responses(404))
 async def add_admin_to_room(
     room_id: int,
     user_id: int,
@@ -236,7 +210,7 @@ async def add_admin_to_room(
     await chat_service.add_admin_to_room_by_id(room_id, user_id)
     return {"message": f"Added admin {user_id} to room {room_id}"}
 
-@router.post("/{room_id}/remove_admin/{user_id}")
+@router.post("/{room_id}/remove_admin/{user_id}", responses=error_responses(404))
 async def remove_admin_from_room(
     room_id: int,
     user_id: int,

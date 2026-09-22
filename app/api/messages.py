@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.user import User
+from app.schemas.error import error_responses
 from app.schemas.message import (
     MessageCreate,
     MessageEditRequest,
@@ -29,7 +30,7 @@ def _to_response(msg, sender_username: str, hidden: bool = False) -> MessageResp
     )
 
 
-@router.get("/room/{room_id}", response_model=list[MessageResponse])
+@router.get("/room/{room_id}", response_model=list[MessageResponse], responses=error_responses(404))
 async def get_room_messages(
     room_id: int,
     limit: int = Query(50, ge=1, le=100),
@@ -46,11 +47,7 @@ async def get_room_messages(
     """
     chat_service = ChatService(db)
 
-    room = await chat_service.get_room(room_id)
-    if not room:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Room not found"
-        )
+    await chat_service.require_room(room_id)
 
     messages = await chat_service.get_room_messages(
         room_id, current_user.id, limit, offset
@@ -63,7 +60,7 @@ async def get_room_messages(
     ]
 
 
-@router.post("/", response_model=MessageResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=MessageResponse, status_code=status.HTTP_201_CREATED, responses=error_responses(404))
 async def create_message(
     message_data: MessageCreate,
     current_user: User = Depends(get_current_user),
@@ -72,18 +69,14 @@ async def create_message(
     """Create a new message (REST endpoint)."""
     chat_service = ChatService(db)
 
-    room = await chat_service.get_room(message_data.room_id)
-    if not room:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Room not found"
-        )
+    await chat_service.require_room(message_data.room_id)
 
     message = await chat_service.create_message(message_data, current_user.id)
 
     return _to_response(message, current_user.username)
 
 
-@router.post("/edit", response_model=MessageOperationResponse)
+@router.post("/edit", response_model=MessageOperationResponse, responses=error_responses(403, 404))
 async def edit_message(
     body: MessageEditRequest,
     current_user: User = Depends(get_current_user),
@@ -95,7 +88,7 @@ async def edit_message(
     return MessageOperationResponse(success=True, detail="Message edited successfully")
 
 
-@router.post("/delete", response_model=MessageOperationResponse)
+@router.post("/delete", response_model=MessageOperationResponse, responses=error_responses(403, 404))
 async def delete_message(
     body: MessageIdRequest,
     current_user: User = Depends(get_current_user),
@@ -107,7 +100,7 @@ async def delete_message(
     return MessageOperationResponse(success=True, detail="Message deleted successfully")
 
 
-@router.post("/hide", response_model=MessageOperationResponse)
+@router.post("/hide", response_model=MessageOperationResponse, responses=error_responses(404))
 async def hide_message(
     body: MessageIdRequest,
     current_user: User = Depends(get_current_user),

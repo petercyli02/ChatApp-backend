@@ -1,12 +1,12 @@
 from datetime import datetime, timezone
 from app.schemas import WebSocketMessage
 from app.websockets.manager import manager
-from fastapi import HTTPException, status
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.errors import MessageNotFound, NotMessageSender, RoomNotFound, UserNotFound
 from app.models.message import Message, Room, message_hides
 from app.models.user import User
 from app.schemas.message import MessageCreate, RoomCreate
@@ -26,9 +26,7 @@ class ChatService:
 
     async def create_room(self, room_data: RoomCreate, creator_id: int) -> Room:
         """Create a new chat room."""
-        creator = await self.db.get(User, creator_id)
-        if not creator:
-            return
+        creator = await self.require_user(creator_id)
         room = Room(
             name=room_data.name,
             description=room_data.description,
@@ -52,6 +50,19 @@ class ChatService:
         )
         return result.scalar_one_or_none()
 
+    async def require_room(self, room_id: int) -> Room:
+        """Like get_room, but a missing room is an error rather than None."""
+        room = await self.get_room(room_id)
+        if room is None:
+            raise RoomNotFound()
+        return room
+
+    async def require_user(self, user_id: int) -> User:
+        user = await self.db.get(User, user_id)
+        if user is None:
+            raise UserNotFound("That user doesn't exist.")
+        return user
+
     async def get_all_rooms(self) -> list[Room]:
         """Get all public rooms with members eagerly loaded."""
         result = await self.db.execute(
@@ -73,23 +84,12 @@ class ChatService:
         )
         return list(result.scalars().all())
 
-    async def add_member_to_room_by_id(self, room_id: int, user_id: int) -> bool:
+    async def add_member_to_room_by_id(self, room_id: int, user_id: int) -> None:
         """Add a user to a room."""
         print(f"add_member_to_room called: room_id={room_id}, user_id={user_id}")
 
-        # Get room with members eagerly loaded
-        result = await self.db.execute(
-            select(Room).options(selectinload(Room.members)).where(Room.id == room_id)
-        )
-        room = result.scalar_one_or_none()
-        print(f"Found room: {room}")
-
-        user = await self.db.get(User, user_id)
-        print(f"Found user: {user}")
-
-        if not room or not user:
-            print("Room or user not found!")
-            return False
+        room = await self.require_room(room_id)
+        user = await self.require_user(user_id)
 
         print(f"Current members: {room.members}")
         if user not in room.members:
@@ -113,25 +113,12 @@ class ChatService:
             member_ids,
         )
 
-        return True
-
-    async def add_admin_to_room_by_id(self, room_id: int, user_id: int) -> bool:
+    async def add_admin_to_room_by_id(self, room_id: int, user_id: int) -> None:
         """Add a user to the admins of a room."""
         print(f"add_admin_to_room called: room_id={room_id}, user_id={user_id}")
 
-        # Get room with members eagerly loaded
-        result = await self.db.execute(
-            select(Room).options(selectinload(Room.members)).where(Room.id == room_id)
-        )
-        room = result.scalar_one_or_none()
-        print(f"Found room: {room}")
-
-        user = await self.db.get(User, user_id)
-        print(f"Found user: {user}")
-
-        if not room or not user:
-            print("Room or user not found!")
-            return False
+        room = await self.require_room(room_id)
+        user = await self.require_user(user_id)
 
         if user_id not in room.admin_ids:
             room.admin_ids = [*(room.admin_ids or []), user_id]
@@ -154,25 +141,13 @@ class ChatService:
             WebSocketMessage(type="room.admin_added", payload=payload),
             member_ids,
         )
-        return True
 
-    async def remove_admin_from_room_by_id(self, room_id: int, user_id: int) -> bool:
+    async def remove_admin_from_room_by_id(self, room_id: int, user_id: int) -> None:
         """Remove a user from the admins of a room."""
         print(f"remove_admin_from_room called: room_id={room_id}, user_id={user_id}")
 
-        # Get room with members eagerly loaded
-        result = await self.db.execute(
-            select(Room).options(selectinload(Room.members)).where(Room.id == room_id)
-        )
-        room = result.scalar_one_or_none()
-        print(f"Found room: {room}")
-
-        user = await self.db.get(User, user_id)
-        print(f"Found user: {user}")
-
-        if not room or not user:
-            print("Room or user not found!")
-            return False
+        room = await self.require_room(room_id)
+        user = await self.require_user(user_id)
 
         if user_id in room.admin_ids:
             room.admin_ids = [
@@ -182,26 +157,17 @@ class ChatService:
         else:
             print("User not in admins")
         await self.db.commit()
-        return True
 
-    async def add_member_to_room_by_email(self, room_id: int, email: str) -> bool:
+    async def add_member_to_room_by_email(self, room_id: int, email: str) -> None:
         """Add a user to a room."""
         print(f"add_member_to_room called: room_id={room_id}, email={email}")
 
-        # Get room with members eagerly loaded
-        result = await self.db.execute(
-            select(Room).options(selectinload(Room.members)).where(Room.id == room_id)
-        )
-        room = result.scalar_one_or_none()
-        print(f"Found room: {room}")
+        room = await self.require_room(room_id)
 
         user_result = await self.db.execute(select(User).where(User.email == email))
         user = user_result.scalar_one_or_none()
-        print(f"Found user: {user}")
-
-        if not room or not user:
-            print("Room or user not found!")
-            return False
+        if user is None:
+            raise UserNotFound(email=email)
 
         print(f"Current members: {room.members}")
         if user not in room.members:
@@ -211,25 +177,12 @@ class ChatService:
         else:
             print("User already in room")
 
-        return True
-
-    async def remove_member_from_room(self, room_id: int, user_id: int) -> bool:
+    async def remove_member_from_room(self, room_id: int, user_id: int) -> None:
         """Remove a user from a room."""
         print(f"remove_member_from_room called: room_id={room_id}, user_id={user_id}")
 
-        # Get room with members eagerly loaded
-        result = await self.db.execute(
-            select(Room).options(selectinload(Room.members)).where(Room.id == room_id)
-        )
-        room = result.scalar_one_or_none()
-        print(f"Found room: {room}")
-
-        user = await self.db.get(User, user_id)
-        print(f"Found user: {user}")
-
-        if not room or not user:
-            print("Room or user not found!")
-            return False
+        room = await self.require_room(room_id)
+        user = await self.require_user(user_id)
 
         if user_id in room.admin_ids:
             await self.remove_admin_from_room_by_id(room_id, user_id)
@@ -258,8 +211,6 @@ class ChatService:
             WebSocketMessage(type="room.member_removed", payload=payload),
             member_ids,
         )
-
-        return True
 
     # ==================== Message Operations ====================
 
@@ -292,16 +243,9 @@ class ChatService:
         self, message_id: int, content: str, user_id: int
     ) -> Message:
         """Edit a message. Only the sender may edit."""
-        message = await self.get_message(message_id)
-        if not message:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Message not found"
-            )
+        message = await self.require_message(message_id)
         if message.sender_id != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only edit your own messages",
-            )
+            raise NotMessageSender("You can only edit your own messages.")
         message.content = content
         message.last_edited_at = datetime.now(timezone.utc).isoformat()
         await self.db.commit()
@@ -310,26 +254,15 @@ class ChatService:
 
     async def delete_message(self, message_id: int, user_id: int) -> None:
         """Permanently delete a message. Only the sender may delete."""
-        message = await self.get_message(message_id)
-        if not message:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Message not found"
-            )
+        message = await self.require_message(message_id)
         if message.sender_id != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only delete your own messages",
-            )
+            raise NotMessageSender("You can only delete your own messages.")
         await self.db.delete(message)
         await self.db.commit()
 
     async def hide_message(self, message_id: int, user_id: int) -> None:
         """Hide a message for this user only."""
-        message = await self.get_message(message_id)
-        if not message:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Message not found"
-            )
+        await self.require_message(message_id)
         stmt = (
             insert(message_hides)
             .values(user_id=user_id, message_id=message_id)
@@ -376,6 +309,13 @@ class ChatService:
         messages = list(result.scalars().all())
         # Reverse to get chronological order for display
         return messages[::-1]
+
+    async def require_message(self, message_id: int) -> Message:
+        """Like get_message, but a missing message is an error rather than None."""
+        message = await self.get_message(message_id)
+        if message is None:
+            raise MessageNotFound()
+        return message
 
     async def get_message(self, message_id: int) -> Message | None:
         """Get a single message by ID."""

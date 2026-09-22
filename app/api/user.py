@@ -1,11 +1,9 @@
 from app.database import AsyncSession, get_db
-from app.schemas import WebSocketMessage
-from app.services import ChatService
 from app.services.user import UserService
-from app.websockets import manager
 from fastapi import APIRouter, Depends, status
 
-from app.models.user import User
+from app.models.user import Invitation, User
+from app.schemas.error import error_responses
 from app.schemas.user import (
     InvitationAccept,
     InvitationAnswerResponse,
@@ -17,6 +15,19 @@ from app.schemas.user import (
 from app.api.deps import get_current_user
 
 router = APIRouter(prefix="/api/users", tags=["User"])
+
+
+def _to_response(invitation: Invitation) -> InvitationResponse:
+    return InvitationResponse(
+        id=invitation.id,
+        sender_id=invitation.sender_id,
+        sender_username=invitation.sender.username,
+        receiver_id=invitation.receiver_id,
+        receiver_username=invitation.receiver.username,
+        created_at=invitation.created_at,
+        room_id=invitation.room_id,
+        room_name=invitation.room.name,
+    )
 
 
 @router.get(
@@ -32,20 +43,7 @@ async def get_received_invitations(
     """
     user_service = UserService(db)
     invitations = await user_service.get_received_invitations(current_user.id)
-    print("received invitations:", invitations)
-    return [
-        InvitationResponse(
-            id=invitation.id,
-            sender_id=invitation.sender_id,
-            sender_username=invitation.sender.username,
-            receiver_id=invitation.receiver_id,
-            receiver_username=invitation.receiver.username,
-            created_at=invitation.created_at,
-            room_id=invitation.room_id,
-            room_name=invitation.room.name,
-        )
-        for invitation in invitations
-    ]
+    return [_to_response(invitation) for invitation in invitations]
 
 @router.get(
     "/invitations/sent",
@@ -60,23 +58,15 @@ async def get_sent_invitations(
     """
     user_service = UserService(db)
     invitations = await user_service.get_sent_invitations(current_user.id)
-    print("sent invitations:", invitations)
-    return [
-        InvitationResponse(
-            id=invitation.id,
-            sender_id=invitation.sender_id,
-            sender_username=invitation.sender.username,
-            receiver_id=invitation.receiver_id,
-            receiver_username=invitation.receiver.username,
-            created_at=invitation.created_at,
-            room_id=invitation.room_id,
-            room_name=invitation.room.name,
-        )
-        for invitation in invitations
-    ]
+    return [_to_response(invitation) for invitation in invitations]
 
 
-@router.post("/update", response_model=UserResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/update",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+    responses=error_responses(409),
+)
 async def update_user(
     user_data: UserUpdate,
     current_user: User = Depends(get_current_user),
@@ -86,11 +76,16 @@ async def update_user(
     Update the current authenticated user's profile.
     """
     user_service = UserService(db)
-    await user_service.update_user(current_user.id, user_data.username)
+    await user_service.update_user(current_user, user_data.username)
     return current_user
 
 
-@router.post("/invite", response_model=UserResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/invite",
+    response_model=InvitationResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses=error_responses(400, 403, 404, 409),
+)
 async def invite_user(
     invitation_data: InvitationCreate,
     current_user: User = Depends(get_current_user),
@@ -98,18 +93,22 @@ async def invite_user(
 ):
     """
     Invite a user to a room.
+
+    No try/except: if the service raises, the error handlers in
+    app/api/error_handlers.py turn it into the right response.
     """
     user_service = UserService(db)
-    await user_service.invite_user(
-        current_user.id, invitation_data.email, invitation_data.room_id
+    invitation = await user_service.invite_user(
+        current_user, invitation_data.email, invitation_data.room_id
     )
-    return current_user
+    return _to_response(invitation)
 
 
 @router.delete(
     "/invitations/delete/{invitation_id}",
     response_model=InvitationAnswerResponse,
     status_code=status.HTTP_200_OK,
+    responses=error_responses(404),
 )
 async def delete_invitation(
     invitation_id: int,
@@ -120,11 +119,16 @@ async def delete_invitation(
     Delete an invitation.
     """
     user_service = UserService(db)
-    await user_service.delete_invitation(current_user.id, invitation_id)
+    await user_service.delete_invitation(current_user, invitation_id)
     return InvitationAnswerResponse(message="Invitation deleted successfully")
 
 
-@router.post("/invitations/accept/", response_model=InvitationAnswerResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/invitations/accept/",
+    response_model=InvitationAnswerResponse,
+    status_code=status.HTTP_200_OK,
+    responses=error_responses(404),
+)
 async def accept_invitation(
     invitation_data: InvitationAccept,
     current_user: User = Depends(get_current_user),
@@ -133,8 +137,6 @@ async def accept_invitation(
     """
     Accept an invitation.
     """
-    chat_service = ChatService(db)
     user_service = UserService(db)
-    await chat_service.add_member_to_room_by_id(invitation_data.room_id, current_user.id)
-    await user_service.delete_invitation(current_user.id, invitation_data.invitation_id)
+    await user_service.accept_invitation(current_user, invitation_data.invitation_id)
     return InvitationAnswerResponse(message="Invitation accepted successfully")

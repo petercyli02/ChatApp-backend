@@ -27,6 +27,7 @@ from firebase_admin import credentials
 from app.config import get_settings
 from app.database import create_tables
 from app.api import auth_router, rooms_router, messages_router, user_router
+from app.api.error_handlers import UnhandledErrorMiddleware, register_error_handlers
 from app.websockets.chat import set_manager, router as chat_router
 from app.websockets.manager import manager
 
@@ -73,6 +74,13 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Turns every error into the same JSON shape. See app/api/error_handlers.py.
+register_error_handlers(app)
+
+# Must be added BEFORE CORSMiddleware: the middleware added last runs first, so
+# this ordering puts CORS on the outside, and even a 500 gets CORS headers.
+app.add_middleware(UnhandledErrorMiddleware)
 
 # CORS middleware - allows React frontend to call the API
 app.add_middleware(
